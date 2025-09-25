@@ -1,0 +1,77 @@
+{
+  "version": 2,
+  "name": "eqabo-telegram-bot",
+  "builds": [
+    {
+      "src": "src/bot.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxLambdaSize": "50mb",
+        "includeFiles": [
+          "src/**",
+          "assets/**",
+          "package.json"
+        ]
+      }
+    },
+    {
+      "src": "src/health.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/health",
+      "dest": "/src/health.js"
+    },
+    {
+      "src": "/health/(.*)",
+      "dest": "/src/health.js"
+    },
+    {
+      "src": "/webhook",
+      "dest": "/src/bot.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/src/bot.js"
+    }
+  ],
+  "functions": {
+    "src/bot.js": {
+      "maxDuration": 30,
+      "memory": 1024,
+      "runtime": "nodejs18.x"
+    },
+    "src/health.js": {
+      "maxDuration": 10,
+      "memory": 512,
+      "runtime": "nodejs18.x"
+    }
+  },
+  "env": {
+    "NODE_ENV": "production",
+    "VERCEL": "1"
+  },
+  "headers": [
+    {
+      "source": "/health/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/health",
+      "destination": "/health"
+    }
+  ],
+  "regions": ["fra1", "iad1"],
+  "github": {
+    "autoAlias": false
+  }
+}

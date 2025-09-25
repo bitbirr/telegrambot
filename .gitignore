@@ -35,3 +35,32 @@ pids/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Vercel deployment files
+.vercel/
+.vercel
+*.vercel.app
+
+# Production artifacts
+.next/
+out/
+.cache/
+
+# Serverless deployment artifacts
+.serverless/
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+
+# Lock files (keep package-lock.json but ignore others)
+yarn.lock
+pnpm-lock.yaml
+
+# Error logs
+error.log
+crash.log
