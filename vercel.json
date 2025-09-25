@@ -41,12 +41,12 @@
     "src/bot.js": {
       "maxDuration": 30,
       "memory": 1024,
-      "runtime": "nodejs18.x"
+      "runtime": "nodejs20.x"
     },
     "src/health.js": {
       "maxDuration": 10,
       "memory": 512,
-      "runtime": "nodejs18.x"
+      "runtime": "nodejs20.x"
     }
   },
   "env": {
