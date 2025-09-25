@@ -1,6 +1,7 @@
 {
   "version": 2,
   "name": "eqabo-telegram-bot",
+  "_updated": "2024-12-19T10:30:00Z",
   "builds": [
     {
       "src": "src/bot.js",
