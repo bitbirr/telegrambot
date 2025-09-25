@@ -9,18 +9,24 @@
     "start": "node dist/bot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["telegram", "bot", "hotel", "assistant"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "hotel",
+    "assistant"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "telegraf": "^4.15.4",
-    "openai": "^4.24.1",
+    "@supabase/supabase-js": "^2.58.0",
     "axios": "^1.6.2",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "openai": "^4.24.1",
+    "telegraf": "^4.15.4"
   },
   "devDependencies": {
-    "typescript": "^5.3.3",
+    "@types/node": "^20.10.5",
     "ts-node": "^10.9.2",
-    "@types/node": "^20.10.5"
+    "typescript": "^5.3.3"
   }
 }
