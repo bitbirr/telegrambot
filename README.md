@@ -2,6 +2,8 @@
 
 A comprehensive Telegram bot for hotel booking in Ethiopia with **smart conversational flow**, **AI-powered assistance**, and **multi-language support**.
 
+> **Latest Deployment:** Updated for Node.js 20.x compatibility - December 2024
+
 ## ✨ Enhanced Features
 
 ### 🔘 Smart Conversational Flow
