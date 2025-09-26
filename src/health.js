@@ -776,4 +776,15 @@ app.use(notFoundMiddleware);
 // Global error handler
 app.use(errorMiddleware);
 
+// Start server if running directly
+const PORT = process.env.PORT || 3000;
+if (import.meta.url === `file://${process.argv[1]}`) {
+  app.listen(PORT, () => {
+    console.log(`🚀 eQabo Telegram Bot Health Server running on port ${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`📱 WhatsApp webhook: http://localhost:${PORT}/webhook/whatsapp`);
+    console.log(`🔍 WhatsApp status: http://localhost:${PORT}/webhook/whatsapp/status`);
+  });
+}
+
 export default app;
