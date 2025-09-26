@@ -174,8 +174,50 @@ async function getPaymentMethods(language = 'en', userId = null) {
   }
 }
 
-// User sessions
+// User sessions with memory optimization
 const userSessions = new Map();
+const SESSION_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_SESSIONS = 1000; // Maximum number of sessions to keep in memory
+
+// Session cleanup function to prevent memory leaks
+function cleanupOldSessions() {
+  const now = Date.now();
+  const sessionsToDelete = [];
+  
+  for (const [userId, session] of userSessions.entries()) {
+    // Add lastActivity timestamp if not present
+    if (!session.lastActivity) {
+      session.lastActivity = now;
+    }
+    
+    // Remove sessions older than 24 hours
+    if (now - session.lastActivity > SESSION_TIMEOUT) {
+      sessionsToDelete.push(userId);
+    }
+  }
+  
+  // Delete old sessions
+  sessionsToDelete.forEach(userId => userSessions.delete(userId));
+  
+  // If still too many sessions, remove oldest ones
+  if (userSessions.size > MAX_SESSIONS) {
+    const sessions = Array.from(userSessions.entries());
+    sessions.sort((a, b) => (a[1].lastActivity || 0) - (b[1].lastActivity || 0));
+    
+    const toRemove = userSessions.size - MAX_SESSIONS;
+    for (let i = 0; i < toRemove; i++) {
+      userSessions.delete(sessions[i][0]);
+    }
+  }
+  
+  // Force garbage collection if available
+  if (global.gc && userSessions.size > MAX_SESSIONS * 0.8) {
+    global.gc();
+  }
+}
+
+// Run session cleanup every 30 minutes
+setInterval(cleanupOldSessions, 30 * 60 * 1000);
 
 // Bot states
 const STATES = {
@@ -202,8 +244,10 @@ const STATES = {
   WAITING_FINAL_CONFIRMATION: 'waiting_final_confirmation'
 };
 
-// Get user session
+// Get user session with activity tracking
 function getUserSession(userId) {
+  const now = Date.now();
+  
   if (!userSessions.has(userId)) {
     userSessions.set(userId, {
       language: 'en',
@@ -214,9 +258,16 @@ function getUserSession(userId) {
       checkInDate: null,
       checkOutDate: null,
       guests: null,
-      paymentMethod: null
+      paymentMethod: null,
+      lastActivity: now,
+      createdAt: now
     });
+  } else {
+    // Update last activity timestamp
+    const session = userSessions.get(userId);
+    session.lastActivity = now;
   }
+  
   return userSessions.get(userId);
 }
 

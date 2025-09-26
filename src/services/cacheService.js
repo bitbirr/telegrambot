@@ -13,10 +13,10 @@ import { logEvent } from './logService.js';
  */
 class CacheService {
     constructor() {
-        // In-memory cache for ultra-fast access
+        // In-memory cache for ultra-fast access (optimized for lower memory usage)
         this.memoryCache = new Map();
-        this.maxMemoryCacheSize = 1000; // Maximum items in memory
-        this.memoryCacheTTL = 5 * 60 * 1000; // 5 minutes TTL for memory cache
+        this.maxMemoryCacheSize = 200; // Reduced from 1000 to 200 for memory optimization
+        this.memoryCacheTTL = 3 * 60 * 1000; // Reduced from 5 to 3 minutes TTL for memory cache
         
         // Cache statistics
         this.stats = {
@@ -389,11 +389,42 @@ class CacheService {
      */
     clearExpiredEntries() {
         const now = Date.now();
+        const keysToDelete = [];
         
         for (const [key, data] of this.memoryCache.entries()) {
             if ((data.ttl && now > data.ttl) || 
                 (now - data.timestamp > this.memoryCacheTTL)) {
-                this.memoryCache.delete(key);
+                keysToDelete.push(key);
+            }
+        }
+        
+        // Delete expired keys
+        keysToDelete.forEach(key => this.memoryCache.delete(key));
+        
+        // Force garbage collection if available and memory usage is high
+        if (global.gc && this.memoryCache.size > this.maxMemoryCacheSize * 0.8) {
+            global.gc();
+        }
+    }
+
+    /**
+     * Aggressive memory cleanup - removes half of the cache when memory is high
+     */
+    aggressiveMemoryCleanup() {
+        if (this.memoryCache.size > this.maxMemoryCacheSize * 0.9) {
+            const entries = Array.from(this.memoryCache.entries());
+            // Sort by timestamp (oldest first)
+            entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+            
+            // Remove oldest half
+            const toRemove = Math.floor(entries.length / 2);
+            for (let i = 0; i < toRemove; i++) {
+                this.memoryCache.delete(entries[i][0]);
+            }
+            
+            // Force garbage collection if available
+            if (global.gc) {
+                global.gc();
             }
         }
     }
@@ -486,9 +517,14 @@ class CacheService {
 // Create singleton instance
 const cacheService = new CacheService();
 
-// Periodic cleanup of expired entries
+// Periodic cleanup of expired entries (more frequent for memory optimization)
 setInterval(() => {
     cacheService.clearExpiredEntries();
-}, 5 * 60 * 1000); // Every 5 minutes
+}, 2 * 60 * 1000); // Every 2 minutes (reduced from 5 minutes)
+
+// Aggressive memory cleanup every 10 minutes
+setInterval(() => {
+    cacheService.aggressiveMemoryCleanup();
+}, 10 * 60 * 1000); // Every 10 minutes
 
 export default cacheService;

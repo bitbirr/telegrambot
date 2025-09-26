@@ -14,10 +14,45 @@ import {
 } from './middleware/errorMiddleware.js';
 import monitoringDashboard from './monitoring/dashboard.js';
 
-// Create Express application
+// Create Express app
 const app = express();
 
-// Production middleware
+// Health check cache to improve response times
+const healthCache = {
+  basic: { data: null, timestamp: 0, ttl: 5000 }, // 5 seconds
+  detailed: { data: null, timestamp: 0, ttl: 10000 }, // 10 seconds
+  metrics: { data: null, timestamp: 0, ttl: 15000 } // 15 seconds
+};
+
+function getCachedData(cacheKey) {
+  const cache = healthCache[cacheKey];
+  if (cache && cache.data && (Date.now() - cache.timestamp) < cache.ttl) {
+    return cache.data;
+  }
+  return null;
+}
+
+function setCachedData(cacheKey, data) {
+  const cache = healthCache[cacheKey];
+  if (cache) {
+    cache.data = data;
+    cache.timestamp = Date.now();
+  }
+}
+
+// Production middleware - optimized order for performance
+app.use(compression({ 
+  threshold: 1024, // Only compress responses larger than 1KB
+  level: 6, // Balanced compression level
+  filter: (req, res) => {
+    // Don't compress if the request includes a cache-control: no-transform directive
+    if (req.headers['cache-control'] && req.headers['cache-control'].includes('no-transform')) {
+      return false;
+    }
+    return compression.filter(req, res);
+  }
+}));
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -41,9 +76,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '1mb' })); // Reduced from 10mb for better performance
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Request logging middleware
 app.use(requestLoggerMiddleware);
@@ -94,14 +128,57 @@ const limiter = rateLimit({
 // Apply rate limiting to all requests
 app.use(limiter);
 
-// Basic health check endpoint
-app.get('/health', (req, res) => {
-  res.send('OK');
+// Root endpoint for basic health checks (handles HEAD / requests)
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    service: 'eQabo Telegram Bot',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
-// Detailed health check with circuit breaker status
+// Handle HEAD requests to root endpoint
+app.head('/', (req, res) => {
+  res.status(200).end();
+});
+
+// Basic health check endpoint with caching
+app.get('/health', (req, res) => {
+  // Set cache headers for client-side caching
+  res.set({
+    'Cache-Control': 'public, max-age=5', // Cache for 5 seconds
+    'ETag': `"health-${Date.now()}"`,
+    'Last-Modified': new Date().toUTCString()
+  });
+
+  // Check cache first
+  const cached = getCachedData('basic');
+  if (cached) {
+    return res.status(200).json(cached);
+  }
+
+  const healthData = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  };
+
+  // Cache the response
+  setCachedData('basic', healthData);
+  res.status(200).json(healthData);
+});
+
+// Detailed health check with circuit breaker status and caching
 app.get('/health/detailed', async (req, res) => {
   try {
+    // Check cache first
+    const cached = getCachedData('detailed');
+    if (cached) {
+      return res.status(cached.statusCode || 200).json(cached.data);
+    }
+
     const healthStatus = await resilienceService.performHealthCheck();
     const metrics = resilienceService.getDetailedMetrics();
     
@@ -118,6 +195,9 @@ app.get('/health/detailed', async (req, res) => {
     // Set appropriate HTTP status code based on health
     const statusCode = healthStatus.overall === 'healthy' ? 200 : 
                       healthStatus.overall === 'degraded' ? 207 : 503;
+    
+    // Cache the response with status code
+    setCachedData('detailed', { data: detailedHealth, statusCode });
     
     res.status(statusCode).json(detailedHealth);
   } catch (error) {
@@ -174,9 +254,15 @@ app.get('/health/errors', (req, res) => {
   }
 });
 
-// System metrics endpoint
+// System metrics endpoint with caching
 app.get('/health/metrics', (req, res) => {
   try {
+    // Check cache first
+    const cached = getCachedData('metrics');
+    if (cached) {
+      return res.json(cached);
+    }
+
     const metrics = {
       system: {
         uptime: process.uptime(),
@@ -199,6 +285,9 @@ app.get('/health/metrics', (req, res) => {
         timestamp: new Date().toISOString()
       }
     };
+    
+    // Cache the metrics
+    setCachedData('metrics', metrics);
     
     res.json(metrics);
   } catch (error) {
