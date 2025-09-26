@@ -4,6 +4,7 @@ import supabase from './supabase.js';
 import openai from './openai.js';
 import { logEvent } from './services/logService.js';
 import databaseService from './services/databaseService.js';
+import bookingApiService from './services/bookingApiService.js';
 import optimizedAIService from './services/optimizedAIService.js';
 import cacheService from './services/cacheService.js';
 import resilienceService from './services/resilienceService.js';
@@ -225,6 +226,8 @@ const STATES = {
   MAIN_MENU: 'main_menu',
   CITY_SELECTION: 'city_selection',
   HOTEL_SELECTION: 'hotel_selection',
+  ROOM_AVAILABILITY: 'room_availability',
+  ROOM_SELECTION: 'room_selection',
   CHECK_IN_DATE: 'check_in_date',
   CHECK_OUT_DATE: 'check_out_date',
   GUEST_COUNT: 'guest_count',
@@ -255,10 +258,15 @@ function getUserSession(userId) {
       state: STATES.LANGUAGE_SELECTION,
       destination: null,
       selectedHotel: null,
+      selectedRoom: null,
+      availableRooms: null,
       checkInDate: null,
       checkOutDate: null,
       guests: null,
       paymentMethod: null,
+      paymentMethodId: null,
+      email: null,
+      specialRequests: null,
       lastActivity: now,
       createdAt: now
     });
@@ -772,7 +780,13 @@ bot.action(/^hotel_(.+)$/, async (ctx) => {
     const calendar = generateCalendarKeyboard(today.getFullYear(), today.getMonth(), 'checkin', null, session.language);
     const checkInMsg = await getText('checkIn', session.language, ctx.from.id) || 
                       "📅 Please select your check-in date:";
-    await ctx.editMessageText(checkInMsg, { reply_markup: calendar });
+    
+    // Enhanced message with hotel info
+    const hotelInfo = `🏨 *${selectedHotel.name}* selected!\n\n${checkInMsg}`;
+    await ctx.editMessageText(hotelInfo, { 
+      reply_markup: calendar,
+      parse_mode: 'Markdown'
+    });
     
     await logEvent('info', 'Hotel selected', {
       context: 'hotel_selection',
@@ -1136,34 +1150,115 @@ bot.action(/^cal_(.+)$/, async (ctx) => {
         
       } else if (type === 'checkout') {
         session.checkOutDate = formattedDate;
-        session.state = STATES.GUEST_COUNT;
+        session.state = STATES.ROOM_AVAILABILITY;
         
-        // Show guest count selection
-        const guestKeyboard = {
-          inline_keyboard: [
-            [
-              { text: '1', callback_data: 'guests_1' },
-              { text: '2', callback_data: 'guests_2' },
-              { text: '3', callback_data: 'guests_3' },
-              { text: '4', callback_data: 'guests_4' }
-            ],
-            [
-              { text: '5', callback_data: 'guests_5' },
-              { text: '6', callback_data: 'guests_6' },
-              { text: '7', callback_data: 'guests_7' },
-              { text: '8', callback_data: 'guests_8' }
-            ],
-            [
-              { text: '9', callback_data: 'guests_9' },
-              { text: '10', callback_data: 'guests_10' }
-            ],
-            [
+        // Check room availability using the API
+        await ctx.editMessageText('🔍 Checking room availability...', {
+          reply_markup: { inline_keyboard: [] }
+        });
+
+        try {
+          const availabilityData = await bookingApiService.checkRoomAvailability(
+            session.selectedHotel.id,
+            session.checkInDate,
+            session.checkOutDate
+          );
+
+          if (availabilityData && availabilityData.summary.available > 0) {
+            // Show available rooms with room selection UI
+            const roomKeyboard = bookingApiService.createRoomSelectionKeyboard(
+              availabilityData.available_rooms,
+              'room_'
+            );
+
+            // Add back button
+            roomKeyboard.inline_keyboard.push([
               { text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }
+            ]);
+
+            const roomMsg = `🛏️ *Available Rooms*\n\n` +
+                           `📅 Check-in: ${session.checkInDate}\n` +
+                           `📅 Check-out: ${session.checkOutDate}\n\n` +
+                           `🟢 ${availabilityData.summary.available} rooms available\n` +
+                           `🔴 ${availabilityData.summary.reserved} rooms reserved\n\n` +
+                           `Please select a room:`;
+
+            await ctx.editMessageText(roomMsg, { 
+              reply_markup: roomKeyboard,
+              parse_mode: 'Markdown'
+            });
+
+            session.state = STATES.ROOM_SELECTION;
+            session.availableRooms = availabilityData.available_rooms;
+
+            await logEvent('info', 'Room availability checked', {
+              context: 'room_availability',
+              user_id: ctx.from.id,
+              hotel_id: session.selectedHotel.id,
+              available_rooms: availabilityData.summary.available,
+              check_in: session.checkInDate,
+              check_out: session.checkOutDate
+            });
+
+          } else {
+            // No rooms available
+            const noRoomsMsg = `❌ *No rooms available*\n\n` +
+                              `📅 Check-in: ${session.checkInDate}\n` +
+                              `📅 Check-out: ${session.checkOutDate}\n\n` +
+                              `Please try different dates.`;
+
+            const backKeyboard = {
+              inline_keyboard: [
+                [{ text: '📅 Try Different Dates', callback_data: `hotel_${session.selectedHotel.id}` }],
+                [{ text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+              ]
+            };
+
+            await ctx.editMessageText(noRoomsMsg, { 
+              reply_markup: backKeyboard,
+              parse_mode: 'Markdown'
+            });
+
+            session.state = STATES.HOTEL_SELECTION;
+          }
+
+        } catch (error) {
+          await logEvent('error', 'Room availability check failed', {
+            context: 'room_availability',
+            user_id: ctx.from.id,
+            hotel_id: session.selectedHotel.id,
+            error: error.message
+          });
+
+          // Fallback: show guest count selection (old flow)
+          session.state = STATES.GUEST_COUNT;
+          const guestKeyboard = {
+            inline_keyboard: [
+              [
+                { text: '1', callback_data: 'guests_1' },
+                { text: '2', callback_data: 'guests_2' },
+                { text: '3', callback_data: 'guests_3' },
+                { text: '4', callback_data: 'guests_4' }
+              ],
+              [
+                { text: '5', callback_data: 'guests_5' },
+                { text: '6', callback_data: 'guests_6' },
+                { text: '7', callback_data: 'guests_7' },
+                { text: '8', callback_data: 'guests_8' }
+              ],
+              [
+                { text: '9', callback_data: 'guests_9' },
+                { text: '10', callback_data: 'guests_10' }
+              ],
+              [
+                { text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }
+              ]
             ]
-          ]
-        };
-        
-        const guestsMsg = await getText('guests', session.language, ctx.from.id) || 
+          };
+          
+          const guestsMsg = `⚠️ Unable to check room availability. Continuing with booking...\n\n${await getText('guests', session.language, ctx.from.id) || '👥 How many guests will be staying?'}`;
+          await ctx.editMessageText(guestsMsg, { reply_markup: guestKeyboard });
+        }
                          "👥 Please select the number of guests:";
         await ctx.editMessageText(guestsMsg, { reply_markup: guestKeyboard });
         
@@ -1185,6 +1280,92 @@ bot.action(/^cal_(.+)$/, async (ctx) => {
       error: error.message
     });
     await ctx.answerCbQuery('Error occurred');
+    await ctx.reply(await getText('error', session.language || 'en', ctx.from.id));
+  }
+});
+
+// Room selection handler
+bot.action(/^room_(.+)$/, async (ctx) => {
+  try {
+    const roomId = ctx.match[1];
+    const session = getUserSession(ctx.from.id);
+    
+    if (!session.availableRooms) {
+      await ctx.reply(await getText('error', session.language, ctx.from.id));
+      return;
+    }
+
+    // Find the selected room
+    const selectedRoom = session.availableRooms.find(room => room.id === roomId);
+    
+    if (!selectedRoom) {
+      await ctx.reply(await getText('error', session.language, ctx.from.id));
+      return;
+    }
+
+    session.selectedRoom = selectedRoom;
+    session.state = STATES.GUEST_COUNT;
+
+    // Show guest count selection with room info
+    const guestKeyboard = {
+      inline_keyboard: [
+        [
+          { text: '1', callback_data: 'guests_1' },
+          { text: '2', callback_data: 'guests_2' },
+          { text: '3', callback_data: 'guests_3' },
+          { text: '4', callback_data: 'guests_4' }
+        ],
+        [
+          { text: '5', callback_data: 'guests_5' },
+          { text: '6', callback_data: 'guests_6' },
+          { text: '7', callback_data: 'guests_7' },
+          { text: '8', callback_data: 'guests_8' }
+        ],
+        [
+          { text: '9', callback_data: 'guests_9' },
+          { text: '10', callback_data: 'guests_10' }
+        ],
+        [
+          { text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }
+        ]
+      ]
+    };
+
+    const nights = Math.ceil((new Date(session.checkOutDate) - new Date(session.checkInDate)) / (1000 * 60 * 60 * 24));
+    const totalPrice = nights * selectedRoom.price_per_night;
+
+    const roomSummary = `🛏️ *Room Selected*\n\n` +
+                       `🏨 ${session.selectedHotel.name}\n` +
+                       `🛏️ ${selectedRoom.room_type.toUpperCase()}${selectedRoom.room_number ? ` - Room ${selectedRoom.room_number}` : ''}\n` +
+                       `👥 Capacity: ${selectedRoom.capacity} guests\n` +
+                       `📅 ${session.checkInDate} → ${session.checkOutDate}\n` +
+                       `🌙 ${nights} night${nights > 1 ? 's' : ''}\n` +
+                       `💰 ${selectedRoom.price_per_night} ETB/night\n` +
+                       `💯 *Total: ${totalPrice} ETB*\n\n` +
+                       `👥 How many guests will be staying?`;
+
+    await ctx.editMessageText(roomSummary, { 
+      reply_markup: guestKeyboard,
+      parse_mode: 'Markdown'
+    });
+
+    await logEvent('info', 'Room selected', {
+      context: 'room_selection',
+      user_id: ctx.from.id,
+      room_id: roomId,
+      room_type: selectedRoom.room_type,
+      price_per_night: selectedRoom.price_per_night,
+      total_price: totalPrice,
+      nights
+    });
+
+  } catch (error) {
+    await logEvent('error', 'Room selection error', {
+      context: 'room_selection',
+      user_id: ctx.from.id,
+      room_id: ctx.match[1],
+      error: error.message
+    });
     await ctx.reply(await getText('error', session.language || 'en', ctx.from.id));
   }
 });
@@ -1236,86 +1417,299 @@ bot.action('confirm_booking', async (ctx) => {
   try {
     const session = getUserSession(ctx.from.id);
     
-    // Save booking to database if Supabase is available
-    if (supabase) {
-      try {
-        const bookingData = {
-          user_id: ctx.from.id,
-          username: ctx.from.username || null,
-          first_name: ctx.from.first_name || null,
-          last_name: ctx.from.last_name || null,
-          hotel_id: session.selectedHotel.id,
-          hotel_name: session.selectedHotel.name,
-          city: session.destination,
-          check_in_date: session.checkInDate,
-          check_out_date: session.checkOutDate,
-          guests: session.guests,
-          payment_method: session.paymentMethod,
-          total_price: session.selectedHotel.price_per_night,
-          language: session.language,
-          booking_status: 'confirmed',
-          created_at: new Date().toISOString()
+    // Enhanced booking with API integration
+    await ctx.editMessageText('🔄 Creating your booking...', {
+      reply_markup: { inline_keyboard: [] }
+    });
+
+    try {
+      // Create booking using API
+      const bookingData = bookingApiService.formatBookingData(session, {
+        user_id: ctx.from.id,
+        username: ctx.from.username,
+        first_name: ctx.from.first_name,
+        last_name: ctx.from.last_name
+      });
+
+      const createdBooking = await bookingApiService.createBooking(bookingData);
+
+      if (createdBooking) {
+        // Booking created successfully - show payment options
+        const paymentKeyboard = {
+          inline_keyboard: [
+            [
+              { text: '💳 Telebirr', callback_data: `pay_${createdBooking.booking_id}_telebirr` },
+              { text: '💰 Chappa', callback_data: `pay_${createdBooking.booking_id}_chappa` }
+            ],
+            [
+              { text: '🏦 Bank Transfer', callback_data: `pay_${createdBooking.booking_id}_bank` },
+              { text: '💸 eBirr', callback_data: `pay_${createdBooking.booking_id}_ebirr` }
+            ],
+            [
+              { text: '🔄 Pay Later', callback_data: `pay_later_${createdBooking.booking_id}` }
+            ],
+            [
+              { text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }
+            ]
+          ]
         };
+
+        const nights = Math.ceil((new Date(session.checkOutDate) - new Date(session.checkInDate)) / (1000 * 60 * 60 * 24));
+        const bookingConfirmMsg = `✅ *Booking Created Successfully!*\n\n` +
+                                 `📝 *Booking Reference:* ${createdBooking.booking_reference}\n` +
+                                 `🏨 *Hotel:* ${session.selectedHotel.name}\n` +
+                                 `🛏️ *Room:* ${session.selectedRoom?.room_type || 'Standard'}\n` +
+                                 `📅 *Check-in:* ${session.checkInDate}\n` +
+                                 `📅 *Check-out:* ${session.checkOutDate}\n` +
+                                 `🌙 *Nights:* ${nights}\n` +
+                                 `👥 *Guests:* ${session.guests}\n` +
+                                 `💰 *Total Amount:* ${createdBooking.total_amount} ETB\n\n` +
+                                 `💳 *Choose Payment Method:*\n` +
+                                 `⏰ *Payment expires in 30 minutes*`;
+
+        await ctx.editMessageText(bookingConfirmMsg, {
+          reply_markup: paymentKeyboard,
+          parse_mode: 'Markdown'
+        });
+
+        // Store booking ID in session for payment processing
+        session.currentBookingId = createdBooking.booking_id;
+        session.state = STATES.WAITING_PAYMENT;
+
+        await logEvent('info', 'Booking created via API', {
+          context: 'enhanced_booking',
+          user_id: ctx.from.id,
+          booking_id: createdBooking.booking_id,
+          booking_reference: createdBooking.booking_reference,
+          hotel_name: session.selectedHotel.name,
+          total_amount: createdBooking.total_amount
+        });
+
+      } else {
+        throw new Error('Failed to create booking via API');
+      }
+
+    } catch (apiError) {
+      await logEvent('error', 'API booking creation failed, falling back to old method', {
+        context: 'enhanced_booking_fallback',
+        user_id: ctx.from.id,
+        error: apiError.message
+      });
+
+      // Fallback to old booking method
+      await handleFallbackBooking(ctx, session);
+    }
+
+  } catch (error) {
+    await logEvent('error', 'Booking confirmation error', {
+      context: 'booking_confirmation',
+      user_id: ctx.from.id,
+      error: error.message
+    });
+    await ctx.reply(await getText('error', session.language || 'en', ctx.from.id));
+  }
+});
+
+// Enhanced payment handler
+bot.action(/^pay_(.+)_(.+)$/, async (ctx) => {
+  try {
+    const bookingId = ctx.match[1];
+    const paymentMethod = ctx.match[2];
+    const session = getUserSession(ctx.from.id);
+
+    await ctx.editMessageText('💳 Initiating payment...', {
+      reply_markup: { inline_keyboard: [] }
+    });
+
+    try {
+      const paymentData = bookingApiService.formatPaymentData(
+        bookingId,
+        paymentMethod,
+        ctx.from.phone_number
+      );
+
+      const paymentResult = await bookingApiService.initiatePayment(paymentData);
+
+      if (paymentResult) {
+        const paymentMsg = `💳 *Payment Initiated*\n\n` +
+                          `📝 *Payment Reference:* ${paymentResult.payment_reference}\n` +
+                          `💰 *Amount:* ${paymentResult.amount} ETB\n` +
+                          `💳 *Method:* ${paymentMethod.toUpperCase()}\n` +
+                          `⏰ *Expires:* ${new Date(paymentResult.expires_at).toLocaleString()}\n\n` +
+                          `🔗 *Payment URL:* ${paymentResult.payment_url}\n\n` +
+                          `Please complete your payment within 30 minutes.`;
+
+        const paymentKeyboard = {
+          inline_keyboard: [
+            [{ text: '🔗 Open Payment Link', url: paymentResult.payment_url }],
+            [{ text: '🔄 Check Payment Status', callback_data: `check_payment_${paymentResult.payment_id}` }],
+            [{ text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+          ]
+        };
+
+        await ctx.editMessageText(paymentMsg, {
+          reply_markup: paymentKeyboard,
+          parse_mode: 'Markdown'
+        });
+
+        session.currentPaymentId = paymentResult.payment_id;
+
+      } else {
+        throw new Error('Payment initiation failed');
+      }
+
+    } catch (paymentError) {
+      await logEvent('error', 'Payment initiation failed', {
+        context: 'payment_initiation',
+        user_id: ctx.from.id,
+        booking_id: bookingId,
+        payment_method: paymentMethod,
+        error: paymentError.message
+      });
+
+      const errorMsg = `❌ *Payment Failed*\n\n` +
+                      `Unable to initiate payment. Please try again or contact support.\n\n` +
+                      `Error: ${paymentError.message}`;
+
+      await ctx.editMessageText(errorMsg, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Try Again', callback_data: `pay_${bookingId}_${paymentMethod}` }],
+            [{ text: await getText('backToMenu', session.language, ctx.from.id) || '🔙 Back to Menu', callback_data: 'back_to_menu' }]
+          ]
+        },
+        parse_mode: 'Markdown'
+      });
+    }
+
+  } catch (error) {
+    await logEvent('error', 'Payment handler error', {
+      context: 'payment_handling',
+      user_id: ctx.from.id,
+      error: error.message
+    });
+    await ctx.reply(await getText('error', session.language || 'en', ctx.from.id));
+  }
+});
+
+// Fallback booking function (old method)
+async function handleFallbackBooking(ctx, session) {
+  // Save booking to database if Supabase is available
+  if (supabase) {
+    try {
+      const bookingData = {
+        user_id: ctx.from.id,
+        username: ctx.from.username || null,
+        first_name: ctx.from.first_name || null,
+        last_name: ctx.from.last_name || null,
+        hotel_id: session.selectedHotel.id,
+        hotel_name: session.selectedHotel.name,
+        city: session.destination,
+        check_in_date: session.checkInDate,
+        check_out_date: session.checkOutDate,
+        guests: session.guests,
+        payment_method: session.paymentMethod,
+        total_price: session.selectedRoom?.price_per_night || session.selectedHotel.price_per_night,
+        language: session.language,
+        booking_status: 'confirmed',
+        created_at: new Date().toISOString()
+      };
+      
+      const { data, error } = await supabase.from('bookings').insert(bookingData).select();
+      
+      if (error) {
+        await logEvent('error', 'Fallback booking database save error', {
+          context: 'fallback_booking_confirmation',
+          user_id: ctx.from.id,
+          error: error.message
+        });
+      } else {
+        const booking = data[0];
+        await logEvent('info', 'Fallback booking saved to database', {
+          context: 'fallback_booking_confirmation',
+          user_id: ctx.from.id,
+          booking_id: booking?.id,
+          hotel_name: session.selectedHotel.name
+        });
         
-        const { data, error } = await supabase.from('bookings').insert(bookingData).select();
-        
-        if (error) {
-          await logEvent('error', 'Booking database save error', {
-            context: 'booking_confirmation',
-            user_id: ctx.from.id,
-            error: error.message
-          });
-        } else {
-          const booking = data[0];
-          await logEvent('info', 'Booking saved to database', {
-            context: 'booking_confirmation',
-            user_id: ctx.from.id,
-            booking_id: booking?.id,
-            hotel_name: session.selectedHotel.name
+        // Send notifications and generate PDF receipt
+        try {
+          // Send email confirmation if user has email
+          if (session.email) {
+            await notificationService.sendBookingConfirmation(booking, session.email);
+          }
+          
+          // Generate PDF receipt
+          const receiptData = {
+            ...booking,
+            guest_name: ctx.from.first_name || ctx.from.username || 'Guest',
+            guest_email: session.email,
+            email: session.email,
+            check_in: session.checkInDate,
+            check_out: session.checkOutDate,
+            check_in_date: session.checkInDate,
+            check_out_date: session.checkOutDate
+          };
+          
+          const pdfPath = await pdfReceiptService.generateBookingReceipt(receiptData, session.language);
+          
+          // Send PDF receipt to user
+          const receiptMsg = session.language === 'am' ? 
+            "📄 የቦታ ምሕዛዝ ደረሰኝዎ:" :
+            session.language === 'ti' ?
+            "📄 ናይ ቦታ ምሕዛዝ ደረሰኝኹም:" :
+            "📄 Your booking receipt:";
+          
+          await ctx.replyWithDocument({ source: pdfPath, filename: `booking_receipt_${booking.id}.pdf` }, {
+            caption: receiptMsg
           });
           
-          // Send notifications and generate PDF receipt
-          try {
-            // Send email confirmation if user has email
-            if (session.email) {
-              await notificationService.sendBookingConfirmation(booking, session.email);
-            }
-            
-            // Generate PDF receipt
-            const receiptData = {
-              ...booking,
-              guest_name: ctx.from.first_name || ctx.from.username || 'Guest',
-              guest_email: session.email,
-              email: session.email,
-              check_in: session.checkInDate,
-              check_out: session.checkOutDate,
-              check_in_date: session.checkInDate,
-              check_out_date: session.checkOutDate
-            };
-            
-            const pdfPath = await pdfReceiptService.generateBookingReceipt(receiptData, session.language);
-            
-            // Send PDF receipt to user
-            const receiptMsg = session.language === 'am' ? 
-              "📄 የቦታ ምሕዛዝ ደረሰኝዎ:" :
-              session.language === 'ti' ?
-              "📄 ናይ ቦታ ምሕዛዝ ደረሰኝኹም:" :
-              "📄 Your booking receipt:";
-            
-            await ctx.replyWithDocument({ source: pdfPath, filename: `booking_receipt_${booking.id}.pdf` }, {
-              caption: receiptMsg
-            });
-            
-            // Send Telegram notification to admin group
-            await notificationService.sendAdminNotification('new_booking', {
-              bookingId: booking.id,
-              hotelName: session.selectedHotel.name,
-              userName: ctx.from.first_name || ctx.from.username,
-              checkIn: session.checkInDate,
-              checkOut: session.checkOutDate,
-              guests: session.guests,
-              totalPrice: session.selectedHotel.price
-            });
+          // Send Telegram notification to admin group
+          await notificationService.sendAdminNotification('new_booking', {
+            bookingId: booking.id,
+            hotelName: session.selectedHotel.name,
+            userName: ctx.from.first_name || ctx.from.username,
+            checkIn: session.checkInDate,
+            checkOut: session.checkOutDate,
+            guests: session.guests,
+            totalPrice: session.selectedRoom?.price_per_night || session.selectedHotel.price_per_night
+          });
+          
+        } catch (notificationError) {
+          await logEvent('error', 'Fallback booking notification failed', {
+            context: 'fallback_booking_notification',
+            user_id: ctx.from.id,
+            error: notificationError.message
+          });
+        }
+      }
+    } catch (dbError) {
+      await logEvent('error', 'Fallback booking database error', {
+        context: 'fallback_booking',
+        user_id: ctx.from.id,
+        error: dbError.message
+      });
+    }
+  }
+
+  // Reset session and show success message
+  session.selectedHotel = null;
+  session.selectedRoom = null;
+  session.availableRooms = null;
+  session.checkInDate = null;
+  session.checkOutDate = null;
+  session.guests = null;
+  session.paymentMethod = null;
+  
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: await getText('backToStart', session.language, ctx.from.id), callback_data: 'search_hotels' }],
+      [{ text: await getText('backToMenu', session.language, ctx.from.id), callback_data: 'back_to_menu' }]
+    ]
+  };
+  
+  await ctx.editMessageText(await getText('thankYou', session.language, ctx.from.id), { reply_markup: keyboard });
+}
             
             // Clean up PDF file after sending (optional)
             setTimeout(() => {
