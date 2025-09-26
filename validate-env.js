@@ -100,6 +100,28 @@ const requiredVars = {
         required: false,
         default: '3000',
         example: '3000'
+    },
+    
+    // WhatsApp Business API Configuration
+    'WHATSAPP_ACCESS_TOKEN': {
+        description: 'WhatsApp Business API Access Token',
+        required: false,
+        example: 'EAAPTwQfcxfABPswDaTz...'
+    },
+    'WHATSAPP_PHONE_NUMBER_ID': {
+        description: 'WhatsApp Business Phone Number ID',
+        required: false,
+        example: '779539541910757'
+    },
+    'WHATSAPP_BUSINESS_ACCOUNT_ID': {
+        description: 'WhatsApp Business Account ID',
+        required: false,
+        example: '1360017022123665'
+    },
+    'WHATSAPP_WEBHOOK_VERIFY_TOKEN': {
+        description: 'WhatsApp Webhook Verify Token',
+        required: false,
+        example: 'your_secure_verify_token'
     }
 };
 

@@ -2,6 +2,7 @@ import supabase from '../supabase.js';
 import { logEvent } from './logService.js';
 import resilienceService from './resilienceService.js';
 import nodemailer from 'nodemailer';
+import whatsappService from './whatsappService.js';
 
 /**
  * Notification Service - Handles email and Telegram notifications
@@ -206,6 +207,146 @@ class NotificationService {
         });
         
         return { success: false, error: lastError?.message || 'Email sending failed after all retry attempts' };
+    }
+
+    /**
+     * Send multi-channel booking confirmation (email + WhatsApp)
+     * @param {Object} bookingData - Booking information
+     * @param {string} userEmail - User's email address
+     * @param {string} userPhone - User's phone number for WhatsApp
+     * @param {Object} options - Additional options
+     * @returns {Promise<Object>} - Results for all channels
+     */
+    async sendMultiChannelBookingConfirmation(bookingData, userEmail, userPhone = null, options = {}) {
+        const results = {
+            email: { attempted: false, success: false },
+            whatsapp: { attempted: false, success: false },
+            overall: { success: false, errors: [] }
+        };
+
+        // Get configured channels for booking confirmation
+        const { getNotificationChannels } = await import('../config/notificationConfig.js');
+        const enabledChannels = getNotificationChannels('booking_confirmation');
+
+        await logEvent('info', 'Starting multi-channel booking confirmation', {
+            context: 'notification_service',
+            booking_id: bookingData.id,
+            enabled_channels: enabledChannels,
+            has_email: !!userEmail,
+            has_phone: !!userPhone
+        });
+
+        // Send email notification if enabled and email provided
+        if (enabledChannels.includes('email') && userEmail) {
+            results.email.attempted = true;
+            try {
+                const emailResult = await this.sendBookingConfirmation(bookingData, userEmail);
+                results.email.success = emailResult.success;
+                results.email.messageId = emailResult.messageId;
+                
+                if (!emailResult.success) {
+                    results.overall.errors.push(`Email: ${emailResult.error}`);
+                }
+            } catch (error) {
+                results.email.success = false;
+                results.email.error = error.message;
+                results.overall.errors.push(`Email: ${error.message}`);
+                
+                await logEvent('error', 'Email booking confirmation failed', {
+                    context: 'notification_service',
+                    booking_id: bookingData.id,
+                    error: error.message
+                });
+            }
+        }
+
+        // Send WhatsApp notification if enabled and phone provided
+        if (enabledChannels.includes('whatsapp') && userPhone) {
+            results.whatsapp.attempted = true;
+            try {
+                if (!whatsappService.isConfigured()) {
+                    throw new Error('WhatsApp service not configured');
+                }
+
+                const whatsappResult = await whatsappService.sendTemplateMessage(
+                    userPhone,
+                    'booking_confirmation',
+                    bookingData
+                );
+                
+                results.whatsapp.success = whatsappResult.success;
+                results.whatsapp.messageId = whatsappResult.messageId;
+                
+                if (whatsappResult.success) {
+                    // Log WhatsApp notification to database
+                    await this.logNotification({
+                        type: 'booking_confirmation',
+                        recipient: userPhone,
+                        channel: 'whatsapp',
+                        booking_id: bookingData.id,
+                        status: 'sent',
+                        metadata: {
+                            hotel_name: bookingData.hotel_name,
+                            check_in: bookingData.check_in,
+                            check_out: bookingData.check_out,
+                            message_id: whatsappResult.messageId
+                        }
+                    });
+
+                    await logEvent('info', 'WhatsApp booking confirmation sent successfully', {
+                        context: 'notification_service',
+                        booking_id: bookingData.id,
+                        recipient: userPhone.substring(0, 5) + '...',
+                        message_id: whatsappResult.messageId
+                    });
+                } else {
+                    results.overall.errors.push(`WhatsApp: ${whatsappResult.error}`);
+                    
+                    // Log failed WhatsApp notification
+                    await this.logNotification({
+                        type: 'booking_confirmation',
+                        recipient: userPhone,
+                        channel: 'whatsapp',
+                        booking_id: bookingData.id,
+                        status: 'failed',
+                        metadata: {
+                            hotel_name: bookingData.hotel_name,
+                            error: whatsappResult.error
+                        }
+                    });
+                }
+            } catch (error) {
+                results.whatsapp.success = false;
+                results.whatsapp.error = error.message;
+                results.overall.errors.push(`WhatsApp: ${error.message}`);
+                
+                await logEvent('error', 'WhatsApp booking confirmation failed', {
+                    context: 'notification_service',
+                    booking_id: bookingData.id,
+                    error: error.message,
+                    recipient: userPhone?.substring(0, 5) + '...'
+                });
+            }
+        }
+
+        // Determine overall success
+        const attemptedChannels = (results.email.attempted ? 1 : 0) + (results.whatsapp.attempted ? 1 : 0);
+        const successfulChannels = (results.email.success ? 1 : 0) + (results.whatsapp.success ? 1 : 0);
+        
+        results.overall.success = attemptedChannels > 0 && successfulChannels > 0;
+        results.overall.attemptedChannels = attemptedChannels;
+        results.overall.successfulChannels = successfulChannels;
+
+        await logEvent('info', 'Multi-channel booking confirmation completed', {
+            context: 'notification_service',
+            booking_id: bookingData.id,
+            attempted_channels: attemptedChannels,
+            successful_channels: successfulChannels,
+            overall_success: results.overall.success,
+            errors: results.overall.errors
+        });
+
+        return results;
     }
 
     /**
@@ -747,6 +888,7 @@ Please investigate immediately.`;
             await supabase.from('notifications_log').insert([{
                 type: notificationData.type,
                 recipient: notificationData.recipient,
+                channel: notificationData.channel || 'email', // Default to email for backward compatibility
                 status: notificationData.status,
                 metadata: notificationData.metadata,
                 created_at: new Date().toISOString(),
@@ -757,7 +899,8 @@ Please investigate immediately.`;
             logEvent('error', 'Failed to log notification', {
                 context: 'notification_service',
                 error: error.message,
-                notification_type: notificationData.type
+                notification_type: notificationData.type,
+                channel: notificationData.channel
             });
         }
     }

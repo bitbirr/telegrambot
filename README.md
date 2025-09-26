@@ -91,6 +91,12 @@ SUPABASE_ANON_KEY=your_supabase_anon_key_here
 # Optional - Backend Integration
 BACKEND_API_URL=https://api.eqabo.com
 BACKEND_API_KEY=your_backend_api_key_here
+
+# WhatsApp Business API Configuration (Optional)
+WHATSAPP_ACCESS_TOKEN=your_whatsapp_access_token_here
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id_here
+WHATSAPP_BUSINESS_ACCOUNT_ID=your_business_account_id_here
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=your_webhook_verify_token_here
 ```
 
 ### API Setup Guide
@@ -112,6 +118,27 @@ BACKEND_API_KEY=your_backend_api_key_here
 2. Create new project
 3. Get URL and anon key from project settings
 4. Add to `.env` file
+
+#### 4. WhatsApp Business API Setup (Optional)
+1. Create a Facebook Business Account
+2. Set up WhatsApp Business API through [Meta for Developers](https://developers.facebook.com)
+3. Get your Access Token, Phone Number ID, and Business Account ID
+4. Set up webhook with URL: `https://your-domain.com/webhook/whatsapp`
+5. Configure webhook verify token
+6. Add all credentials to `.env` file
+
+**WhatsApp Configuration Details:**
+```bash
+# Required for WhatsApp notifications
+WHATSAPP_ACCESS_TOKEN=EAAPTwQfcxfABPswDaTz2Mk4qFtLs6F5MKVYUZAv2MYsTpohMDtpVSj3ZBiMPhONRmYQDHCkfHmbZBKRARDuKhqPO25iyHj6sbykC6GGU7BDwrH4zJIG4tJLsHraCBYdsCdeawnN2mexZB7ColnfV9ehPCVEL89iEMX7z5Cf2V5IqMmzHObgGNwL7OsLh6MuDjDkCVId1d08dufuTKOiCIIziVNIyVsDTdNylE5hl42zvg0M2x2sKBilCLono5gZDZD
+
+WHATSAPP_PHONE_NUMBER_ID=779539541910757
+
+WHATSAPP_BUSINESS_ACCOUNT_ID=1360017022123665
+
+# Webhook verification token (set your own secure token)
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=your_secure_verify_token_here
+```
 
 ## 📁 Project Structure
 
