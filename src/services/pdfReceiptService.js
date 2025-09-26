@@ -30,6 +30,9 @@ class PDFReceiptService {
      */
     async generateBookingReceipt(bookingData, language = 'en') {
         try {
+            // Validate required booking data
+            this.validateBookingData(bookingData);
+            
             const fileName = `booking_receipt_${bookingData.id}_${Date.now()}.pdf`;
             const filePath = path.join(this.receiptsDir, fileName);
 
@@ -52,7 +55,7 @@ class PDFReceiptService {
 
             await logEvent('info', 'PDF receipt generated successfully', {
                 context: 'pdf_receipt_service',
-                booking_id: bookingData.id,
+                booking_id: bookingData?.id || 'unknown',
                 file_path: filePath,
                 language: language
             });
@@ -62,11 +65,64 @@ class PDFReceiptService {
         } catch (error) {
             await logEvent('error', 'PDF receipt generation failed', {
                 context: 'pdf_receipt_service',
-                booking_id: bookingData.id,
+                booking_id: bookingData?.id || 'unknown',
                 error: error.message,
                 language: language
             });
             throw error;
+        }
+    }
+
+    /**
+     * Validate booking data before PDF generation
+     * @param {Object} bookingData - Booking information to validate
+     * @throws {Error} - If required data is missing or invalid
+     */
+    validateBookingData(bookingData) {
+        if (!bookingData || typeof bookingData !== 'object') {
+            throw new Error('Invalid booking data');
+        }
+
+        // Required fields
+        const requiredFields = ['id'];
+        for (const field of requiredFields) {
+            if (!bookingData[field]) {
+                throw new Error(`Missing required field: ${field}`);
+            }
+        }
+
+        // Validate guest name
+        const guestName = bookingData.guest_name || bookingData.first_name;
+        if (!guestName || guestName.trim() === '') {
+            throw new Error('Guest name is required');
+        }
+
+        // Validate hotel name
+        if (!bookingData.hotel_name || bookingData.hotel_name.trim() === '') {
+            throw new Error('Hotel name is required');
+        }
+
+        // Validate dates
+        const checkInDate = bookingData.check_in_date || bookingData.check_in;
+        const checkOutDate = bookingData.check_out_date || bookingData.check_out;
+        
+        if (checkInDate && checkOutDate) {
+            const checkIn = new Date(checkInDate);
+            const checkOut = new Date(checkOutDate);
+            
+            if (isNaN(checkIn.getTime()) || isNaN(checkOut.getTime())) {
+                throw new Error('Invalid check-in or check-out date format');
+            }
+            
+            if (checkOut <= checkIn) {
+                throw new Error('Check-out date must be after check-in date');
+            }
+        }
+
+        // Validate amount
+        const amount = bookingData.total_price || bookingData.price_per_night || bookingData.total_amount;
+        if (!amount || amount <= 0) {
+            throw new Error('Valid booking amount is required');
         }
     }
 

@@ -76,54 +76,136 @@ class NotificationService {
     }
 
     /**
-     * Send booking confirmation email
+     * Send booking confirmation email with retry mechanism
      * @param {Object} bookingData - Booking information
      * @param {string} userEmail - User's email address
+     * @param {number} maxRetries - Maximum number of retry attempts
      * @returns {Promise<boolean>} - Success status
      */
-    async sendBookingConfirmation(bookingData, userEmail) {
-        try {
-            logEvent('info', 'Sending booking confirmation email', {
+    async sendBookingConfirmation(bookingData, userEmail, maxRetries = 3) {
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(userEmail)) {
+            const error = new Error(`Invalid email format: ${userEmail}`);
+            await logEvent('error', 'Invalid email format for booking confirmation', {
                 context: 'notification_service',
                 booking_id: bookingData.id,
                 user_email: userEmail,
-                hotel_name: bookingData.hotelName
+                error: error.message
             });
-
-            const emailContent = this.generateBookingConfirmationEmail(bookingData);
-            
-            const emailResult = await this.sendEmail({
-                to: userEmail,
-                subject: this.emailTemplates.booking_confirmation.subject,
-                html: emailContent.html,
-                text: emailContent.text
-            });
-
-            // Log booking confirmation to database
-            await this.logNotification({
-                type: 'booking_confirmation',
-                recipient: userEmail,
-                booking_id: bookingData.id,
-                status: emailResult.success ? 'sent' : 'failed',
-                metadata: {
-                    hotel_name: bookingData.hotel_name,
-                    check_in: bookingData.check_in,
-                    check_out: bookingData.check_out,
-                    message: emailResult.message || null
-                }
-            });
-
-            return emailResult;
-
-        } catch (error) {
-            logEvent('error', 'Booking confirmation email failed', {
-                context: 'notification_service',
-                error: error.message,
-                booking_id: bookingData.id,
-                user_email: userEmail
-            });
-            return false;
+            throw error;
         }
+
+        // Validate booking data
+        if (!bookingData || !bookingData.id) {
+            const error = new Error('Invalid booking data: missing booking ID');
+            await logEvent('error', 'Invalid booking data for email confirmation', {
+                context: 'notification_service',
+                user_email: userEmail,
+                error: error.message
+            });
+            throw error;
+        }
+
+        let lastError = null;
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                await logEvent('info', 'Sending booking confirmation email', {
+                    context: 'notification_service',
+                    booking_id: bookingData.id,
+                    user_email: userEmail,
+                    hotel_name: bookingData.hotel_name || bookingData.hotelName,
+                    attempt: attempt,
+                    max_retries: maxRetries
+                });
+
+                const emailContent = this.generateBookingConfirmationEmail(bookingData);
+                
+                const emailResult = await this.sendEmail({
+                    to: userEmail,
+                    subject: this.emailTemplates.booking_confirmation.subject,
+                    html: emailContent.html,
+                    text: emailContent.text
+                });
+
+                if (emailResult.success) {
+                    // Log booking confirmation to database
+                    await this.logNotification({
+                        type: 'booking_confirmation',
+                        recipient: userEmail,
+                        booking_id: bookingData.id,
+                        status: 'sent',
+                        metadata: {
+                            hotel_name: bookingData.hotel_name,
+                            check_in: bookingData.check_in,
+                            check_out: bookingData.check_out,
+                            message: emailResult.message || null,
+                            attempt: attempt
+                        }
+                    });
+
+                    await logEvent('info', 'Booking confirmation email sent successfully', {
+                        context: 'notification_service',
+                        booking_id: bookingData.id,
+                        user_email: userEmail,
+                        message_id: emailResult.messageId,
+                        attempt: attempt
+                    });
+                    return emailResult;
+                } else {
+                    throw new Error(emailResult.error || 'Email sending failed');
+                }
+            } catch (error) {
+                lastError = error;
+                
+                await logEvent('warn', `Booking confirmation email attempt ${attempt} failed`, {
+                    context: 'notification_service',
+                    booking_id: bookingData.id,
+                    user_email: userEmail,
+                    error: error.message,
+                    attempt: attempt,
+                    max_retries: maxRetries
+                });
+
+                // If this is not the last attempt, wait before retrying
+                if (attempt < maxRetries) {
+                    const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
+                    await logEvent('info', `Retrying email send in ${delayMs}ms`, {
+                        context: 'notification_service',
+                        booking_id: bookingData.id,
+                        delay_ms: delayMs,
+                        next_attempt: attempt + 1
+                    });
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+            }
+        }
+
+        // All attempts failed - log to database
+        await this.logNotification({
+            type: 'booking_confirmation',
+            recipient: userEmail,
+            booking_id: bookingData.id,
+            status: 'failed',
+            metadata: {
+                hotel_name: bookingData.hotel_name,
+                check_in: bookingData.check_in,
+                check_out: bookingData.check_out,
+                error: lastError?.message || 'Unknown error',
+                total_attempts: maxRetries
+            }
+        });
+
+        logEvent('error', 'Booking confirmation email failed after all retries', {
+            context: 'notification_service',
+            error: lastError?.message || 'Unknown error',
+            booking_id: bookingData.id,
+            user_email: userEmail,
+            total_attempts: maxRetries
+        });
+        
+        return { success: false, error: lastError?.message || 'Email sending failed after all retry attempts' };
     }
 
     /**
@@ -305,22 +387,42 @@ class NotificationService {
      */
     async sendEmail(emailData) {
         try {
-            // Check if SMTP is configured locally
-            const smtpConfigured = process.env.SMTP_USER && process.env.SMTP_PASS;
-            
-            if (!smtpConfigured) {
-                logEvent('info', 'Email skipped - SMTP not configured', {
-                    context: 'notification_service',
-                    recipient: emailData.to,
-                    subject: emailData.subject
-                });
-                // Return success for testing purposes when SMTP is not configured
-                return { success: true, message: 'Email skipped - SMTP not configured' };
+            // Validate email data
+            if (!emailData || !emailData.to) {
+                throw new Error('Email recipient is required');
             }
 
-            // Create nodemailer transporter with SMTP configuration
+            if (!emailData.subject) {
+                throw new Error('Email subject is required');
+            }
+
+            if (!emailData.html && !emailData.text) {
+                throw new Error('Email content (html or text) is required');
+            }
+
+            // Validate email format
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(emailData.to)) {
+                throw new Error(`Invalid email format: ${emailData.to}`);
+            }
+
+            // Check if SMTP is configured locally
+            const smtpConfigured = process.env.SMTP_USER && process.env.SMTP_PASS && process.env.SMTP_HOST;
+            
+            if (!smtpConfigured) {
+                const error = new Error('SMTP configuration incomplete - missing SMTP_USER, SMTP_PASS, or SMTP_HOST');
+                logEvent('error', 'Email failed - SMTP not configured', {
+                    context: 'notification_service',
+                    recipient: emailData.to,
+                    subject: emailData.subject,
+                    error: error.message
+                });
+                return { success: false, error: error.message };
+            }
+
+            // Create nodemailer transporter with enhanced configuration
             const transporter = nodemailer.createTransport({
-                host: process.env.SMTP_HOST || 'smtp.gmail.com',
+                host: process.env.SMTP_HOST,
                 port: parseInt(process.env.SMTP_PORT) || 587,
                 secure: process.env.SMTP_PORT === '465', // true for 465, false for other ports
                 auth: {
@@ -329,11 +431,26 @@ class NotificationService {
                 },
                 tls: {
                     rejectUnauthorized: false // Allow self-signed certificates
-                }
+                },
+                connectionTimeout: 10000, // 10 seconds
+                greetingTimeout: 5000,    // 5 seconds
+                socketTimeout: 10000      // 10 seconds
             });
 
-            // Verify SMTP connection
-            await transporter.verify();
+            // Verify SMTP connection with timeout
+            logEvent('info', 'Verifying SMTP connection', {
+                context: 'notification_service',
+                smtp_host: process.env.SMTP_HOST,
+                smtp_port: process.env.SMTP_PORT,
+                recipient: emailData.to
+            });
+
+            await Promise.race([
+                transporter.verify(),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('SMTP connection timeout')), 15000)
+                )
+            ]);
 
             // Prepare email options
             const mailOptions = {
@@ -344,14 +461,26 @@ class NotificationService {
                 text: emailData.text
             };
 
-            // Send email
-            const info = await transporter.sendMail(mailOptions);
+            logEvent('info', 'SMTP connection verified, sending email', {
+                context: 'notification_service',
+                recipient: emailData.to,
+                subject: emailData.subject
+            });
+
+            // Send email with timeout
+            const info = await Promise.race([
+                transporter.sendMail(mailOptions),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Email send timeout')), 30000)
+                )
+            ]);
 
             logEvent('info', 'Email sent successfully via SMTP', {
                 context: 'notification_service',
                 recipient: emailData.to,
                 subject: emailData.subject,
-                messageId: info.messageId
+                messageId: info.messageId,
+                response: info.response
             });
 
             return { 
@@ -361,13 +490,44 @@ class NotificationService {
             };
 
         } catch (error) {
+            // Enhanced error categorization
+            let errorCategory = 'unknown';
+            let errorDetails = error.message;
+
+            if (error.code === 'ECONNREFUSED') {
+                errorCategory = 'connection_refused';
+                errorDetails = `Cannot connect to SMTP server ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}`;
+            } else if (error.code === 'EAUTH') {
+                errorCategory = 'authentication_failed';
+                errorDetails = 'SMTP authentication failed - check credentials';
+            } else if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
+                errorCategory = 'timeout';
+                errorDetails = 'SMTP operation timed out';
+            } else if (error.responseCode >= 500) {
+                errorCategory = 'server_error';
+                errorDetails = `SMTP server error: ${error.response}`;
+            } else if (error.responseCode >= 400) {
+                errorCategory = 'client_error';
+                errorDetails = `SMTP client error: ${error.response}`;
+            }
+
             logEvent('error', 'Email sending failed', {
                 context: 'notification_service',
-                error: error.message,
-                recipient: emailData.to,
-                subject: emailData.subject
+                error: errorDetails,
+                error_category: errorCategory,
+                error_code: error.code,
+                response_code: error.responseCode,
+                recipient: emailData?.to,
+                subject: emailData?.subject,
+                smtp_host: process.env.SMTP_HOST
             });
-            return { success: false, error: error.message };
+
+            return { 
+                success: false, 
+                error: errorDetails,
+                errorCategory: errorCategory,
+                errorCode: error.code
+            };
         }
     }
 
@@ -377,6 +537,34 @@ class NotificationService {
      * @returns {Object} - Email content (html and text)
      */
     generateBookingConfirmationEmail(bookingData) {
+        // Extract guest name from available fields
+        const guestName = bookingData.guest_name || 
+                         bookingData.first_name || 
+                         bookingData.username || 
+                         'Valued Guest';
+        
+        // Extract hotel name from available fields
+        const hotelName = bookingData.hotel_name || 
+                         bookingData.hotelName || 
+                         'eQabo Hotel';
+        
+        // Extract dates from available fields
+        const checkInDate = bookingData.check_in_date || 
+                           bookingData.checkInDate || 
+                           bookingData.check_in || 
+                           'TBD';
+        
+        const checkOutDate = bookingData.check_out_date || 
+                            bookingData.checkOutDate || 
+                            bookingData.check_out || 
+                            'TBD';
+        
+        // Extract price information
+        const totalAmount = bookingData.total_price || 
+                           bookingData.totalAmount || 
+                           bookingData.price_per_night || 
+                           'TBD';
+        
         const html = `
 <!DOCTYPE html>
 <html>
@@ -399,19 +587,35 @@ class NotificationService {
             <h1>🏨 eQabo Hotel Booking Confirmation</h1>
         </div>
         <div class="content">
-            <h2>Dear ${bookingData.guestName},</h2>
+            <h2>Dear ${guestName},</h2>
             <p>Thank you for choosing eQabo! Your booking has been confirmed.</p>
             
             <div class="booking-details">
                 <h3>📋 Booking Details</h3>
-                <p><strong>Booking ID:</strong> <span class="highlight">${bookingData.id}</span></p>
-                <p><strong>Hotel:</strong> ${bookingData.hotelName}</p>
-                <p><strong>Check-in:</strong> ${bookingData.checkInDate}</p>
-                <p><strong>Check-out:</strong> ${bookingData.checkOutDate}</p>
-                <p><strong>Rooms:</strong> ${bookingData.rooms}</p>
-                <p><strong>Guests:</strong> ${bookingData.guests}</p>
-                <p><strong>Total Amount:</strong> <span class="highlight">${bookingData.totalAmount}</span></p>
+                <p><strong>Booking ID:</strong> <span class="highlight">${bookingData.id || 'N/A'}</span></p>
+                <p><strong>Hotel:</strong> ${hotelName}</p>
+                <p><strong>City:</strong> ${bookingData.city || 'N/A'}</p>
+                <p><strong>Check-in:</strong> ${checkInDate}</p>
+                <p><strong>Check-out:</strong> ${checkOutDate}</p>
+                <p><strong>Guests:</strong> ${bookingData.guests || 1}</p>
+                <p><strong>Payment Method:</strong> ${bookingData.payment_method || bookingData.paymentMethod || 'N/A'}</p>
+                <p><strong>Total Amount:</strong> <span class="highlight">${totalAmount} ETB</span></p>
+                <p><strong>Booking Status:</strong> <span class="highlight">${bookingData.booking_status || 'Confirmed'}</span></p>
             </div>
+            
+            <div class="booking-details">
+                <h3>📞 Contact Information</h3>
+                <p><strong>Email:</strong> ${bookingData.email || bookingData.guest_email || 'N/A'}</p>
+                <p><strong>Booking Date:</strong> ${bookingData.created_at ? new Date(bookingData.created_at).toLocaleDateString() : new Date().toLocaleDateString()}</p>
+            </div>
+            
+            <p><strong>Important Notes:</strong></p>
+            <ul>
+                <li>Please arrive at the hotel with a valid ID</li>
+                <li>Check-in time is typically 2:00 PM</li>
+                <li>Check-out time is typically 12:00 PM</li>
+                <li>For any changes or cancellations, please contact us in advance</li>
+            </ul>
             
             <p>We look forward to welcoming you! If you have any questions, please don't hesitate to contact us.</p>
         </div>
@@ -426,18 +630,30 @@ class NotificationService {
         const text = `
 eQabo Hotel Booking Confirmation
 
-Dear ${bookingData.guestName},
+Dear ${guestName},
 
 Thank you for choosing eQabo! Your booking has been confirmed.
 
 Booking Details:
-- Booking ID: ${bookingData.id}
-- Hotel: ${bookingData.hotelName}
-- Check-in: ${bookingData.checkInDate}
-- Check-out: ${bookingData.checkOutDate}
-- Rooms: ${bookingData.rooms}
-- Guests: ${bookingData.guests}
-- Total Amount: ${bookingData.totalAmount}
+- Booking ID: ${bookingData.id || 'N/A'}
+- Hotel: ${hotelName}
+- City: ${bookingData.city || 'N/A'}
+- Check-in: ${checkInDate}
+- Check-out: ${checkOutDate}
+- Guests: ${bookingData.guests || 1}
+- Payment Method: ${bookingData.payment_method || bookingData.paymentMethod || 'N/A'}
+- Total Amount: ${totalAmount} ETB
+- Booking Status: ${bookingData.booking_status || 'Confirmed'}
+
+Contact Information:
+- Email: ${bookingData.email || bookingData.guest_email || 'N/A'}
+- Booking Date: ${bookingData.created_at ? new Date(bookingData.created_at).toLocaleDateString() : new Date().toLocaleDateString()}
+
+Important Notes:
+- Please arrive at the hotel with a valid ID
+- Check-in time is typically 2:00 PM
+- Check-out time is typically 12:00 PM
+- For any changes or cancellations, please contact us in advance
 
 We look forward to welcoming you! If you have any questions, please don't hesitate to contact us.
 
