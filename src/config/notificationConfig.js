@@ -73,11 +73,34 @@ export const notificationConfig = {
         }
     },
 
+    // WhatsApp Business API Configuration
+    whatsapp: {
+        accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
+        phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
+        businessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID,
+        apiUrl: 'https://graph.facebook.com/v18.0',
+        webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+        
+        // Message formatting
+        formatting: {
+            maxMessageLength: 4096,
+            useEmojis: true,
+            templateLanguage: 'en_US'
+        },
+
+        // Rate limiting
+        rateLimits: {
+            messagesPerSecond: 10,
+            messagesPerMinute: 100,
+            burstLimit: 3
+        }
+    },
+
     // Notification Types and Their Settings
     notificationTypes: {
         booking_confirmation: {
             enabled: true,
-            channels: ['email'],
+            channels: ['email', 'whatsapp'],
             priority: 'normal',
             adminGroup: 'bookings',
             template: 'booking_confirmation'
@@ -245,6 +268,7 @@ export const notificationConfig = {
     features: {
         enableEmailNotifications: process.env.ENABLE_EMAIL_NOTIFICATIONS !== 'false',
         enableTelegramNotifications: process.env.ENABLE_TELEGRAM_NOTIFICATIONS !== 'false',
+        enableWhatsAppNotifications: process.env.ENABLE_WHATSAPP_NOTIFICATIONS !== 'false',
         enableEscalations: process.env.ENABLE_ESCALATIONS !== 'false',
         enableMonitoring: process.env.ENABLE_MONITORING !== 'false',
         enableRateLimiting: process.env.ENABLE_RATE_LIMITING !== 'false',
@@ -310,6 +334,9 @@ export function getNotificationChannels(notificationType) {
         }
         if (channel === 'telegram') {
             return notificationConfig.features.enableTelegramNotifications;
+        }
+        if (channel === 'whatsapp') {
+            return notificationConfig.features.enableWhatsAppNotifications;
         }
         return true;
     });

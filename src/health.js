@@ -605,10 +605,186 @@ app.post('/monitoring/reset', (req, res) => {
   }
 });
 
+// WhatsApp Business API Webhook endpoints
+import whatsappService from './services/whatsappService.js';
+import { logEvent } from './services/logService.js';
+
+// WhatsApp webhook verification endpoint
+app.get('/webhook/whatsapp', (req, res) => {
+  try {
+    const verifyToken = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const mode = req.query['hub.mode'];
+    
+    logEvent('info', 'WhatsApp webhook verification attempt', {
+      context: 'whatsapp_webhook',
+      mode: mode,
+      has_token: !!verifyToken,
+      has_challenge: !!challenge
+    });
+    
+    if (mode === 'subscribe') {
+      const verifiedChallenge = whatsappService.verifyWebhook(verifyToken, challenge);
+      
+      if (verifiedChallenge) {
+        res.status(200).send(verifiedChallenge);
+      } else {
+        res.status(403).json({
+          error: 'Webhook verification failed',
+          message: 'Invalid verify token',
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else {
+      res.status(400).json({
+        error: 'Invalid webhook mode',
+        message: 'Expected mode: subscribe',
+        received_mode: mode,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    logger.error({ error }, 'WhatsApp webhook verification failed');
+    res.status(500).json({
+      error: 'Webhook verification error',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// WhatsApp webhook event handler
+app.post('/webhook/whatsapp', async (req, res) => {
+  try {
+    const body = req.body;
+    
+    logEvent('info', 'WhatsApp webhook event received', {
+      context: 'whatsapp_webhook',
+      object: body.object,
+      entry_count: body.entry?.length || 0
+    });
+    
+    if (body.object === 'whatsapp_business_account') {
+      // Process the webhook event
+      await whatsappService.processWebhookEvent(body);
+      
+      // Always respond with 200 to acknowledge receipt
+      res.status(200).json({
+        status: 'received',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Not a WhatsApp Business Account event, but acknowledge anyway
+      logEvent('warn', 'Unknown webhook object type', {
+        context: 'whatsapp_webhook',
+        object: body.object
+      });
+      
+      res.status(200).json({
+        status: 'ignored',
+        reason: 'Unknown object type',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    logger.error({ error, body: req.body }, 'WhatsApp webhook processing failed');
+    
+    // Still return 200 to avoid webhook retries
+    res.status(200).json({
+      status: 'error',
+      message: 'Webhook processing failed',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// WhatsApp service status endpoint
+app.get('/webhook/whatsapp/status', (req, res) => {
+  try {
+    const status = {
+      service: 'WhatsApp Business API',
+      configured: whatsappService.isConfigured(),
+      timestamp: new Date().toISOString(),
+      configuration: {
+        has_access_token: !!whatsappService.accessToken,
+        has_phone_number_id: !!whatsappService.phoneNumberId,
+        has_business_account_id: !!whatsappService.businessAccountId,
+        has_verify_token: !!whatsappService.webhookVerifyToken,
+        api_url: whatsappService.apiUrl
+      },
+      webhook_url: `${req.protocol}://${req.get('host')}/webhook/whatsapp`
+    };
+    
+    const statusCode = status.configured ? 200 : 503;
+    res.status(statusCode).json(status);
+  } catch (error) {
+    logger.error({ error }, 'WhatsApp status check failed');
+    res.status(500).json({
+      error: 'Status check failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Test WhatsApp message endpoint (for development/testing)
+app.post('/webhook/whatsapp/test', async (req, res) => {
+  try {
+    // In production, you'd want to add authentication here
+    const { to, message, template_data } = req.body;
+    
+    if (!to) {
+      return res.status(400).json({
+        error: 'Missing required field: to',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (!message && !template_data) {
+      return res.status(400).json({
+        error: 'Either message or template_data is required',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    let result;
+    if (template_data) {
+      result = await whatsappService.sendTemplateMessage(to, 'booking_confirmation', template_data);
+    } else {
+      result = await whatsappService.sendTextMessage(to, message);
+    }
+    
+    res.json({
+      test_result: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    logger.error({ error }, 'WhatsApp test message failed');
+    res.status(500).json({
+      error: 'Test message failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // 404 handler
 app.use(notFoundMiddleware);
 
 // Global error handler
 app.use(errorMiddleware);
+
+// Start server if running directly
+const PORT = process.env.PORT || 3000;
+if (import.meta.url === `file://${process.argv[1]}`) {
+  app.listen(PORT, () => {
+    console.log(`🚀 eQabo Telegram Bot Health Server running on port ${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`📱 WhatsApp webhook: http://localhost:${PORT}/webhook/whatsapp`);
+    console.log(`🔍 WhatsApp status: http://localhost:${PORT}/webhook/whatsapp/status`);
+  });
+}
 
 export default app;
