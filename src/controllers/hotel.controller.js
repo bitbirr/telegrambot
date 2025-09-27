@@ -22,6 +22,16 @@ class HotelController {
       const parsedLimit = Math.min(parseInt(limit, 10) || 50, 100);
       const parsedOffset = parseInt(offset, 10) || 0;
 
+      // Check if database is available
+      if (!supabase) {
+        return res.status(503).json({
+          success: false,
+          error: 'Database service unavailable',
+          message: 'Database connection not configured',
+          timestamp: new Date().toISOString()
+        });
+      }
+
       let query = supabase
         .from('hotels')
         .select(`
@@ -119,6 +129,16 @@ class HotelController {
         });
       }
 
+      // Check if database is available
+      if (!supabase) {
+        return res.status(503).json({
+          success: false,
+          error: 'Database service unavailable',
+          message: 'Database connection not configured',
+          timestamp: new Date().toISOString()
+        });
+      }
+
       const { data, error } = await supabase
         .from('hotels')
         .select(`
@@ -209,6 +229,16 @@ class HotelController {
         return res.status(400).json({
           success: false,
           error: 'Hotel ID is required',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Check if database is available
+      if (!supabase) {
+        return res.status(503).json({
+          success: false,
+          error: 'Database service unavailable',
+          message: 'Database connection not configured',
           timestamp: new Date().toISOString()
         });
       }

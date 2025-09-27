@@ -19,6 +19,11 @@ class AvailabilityService {
         throw new Error('Missing required parameters: room_id, checkin, checkout');
       }
 
+      // Check if database is available
+      if (!supabase) {
+        throw new Error('Database service unavailable');
+      }
+
       // Validate date format and logic
       const checkinDate = new Date(checkin);
       const checkoutDate = new Date(checkout);
@@ -81,6 +86,11 @@ class AvailabilityService {
    */
   async checkAvailabilityDirectQuery(room_id, checkin, checkout) {
     try {
+      // Check if database is available
+      if (!supabase) {
+        throw new Error('Database service unavailable');
+      }
+
       const { count, error } = await supabase
         .from('bookings')
         .select('*', { count: 'exact', head: true })
