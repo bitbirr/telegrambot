@@ -426,6 +426,12 @@ app.get('/monitoring/dashboard', (req, res) => {
   }
 });
 
+// Import hotel routes
+import hotelRoutes from './routes/hotel.routes.js';
+
+// Mount API routes
+app.use('/api/hotels', hotelRoutes);
+
 // Real-time metrics endpoint
 app.get('/monitoring/metrics/realtime', (req, res) => {
   try {
