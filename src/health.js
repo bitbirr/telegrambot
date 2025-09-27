@@ -619,4 +619,15 @@ app.use(notFoundMiddleware);
 // Global error handler
 app.use(errorMiddleware);
 
+// Start server if this file is run directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Health server running on port ${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`🏨 Hotels API: http://localhost:${PORT}/api/hotels`);
+    console.log(`📅 Bookings API: http://localhost:${PORT}/api/bookings`);
+  });
+}
+
 export default app;
